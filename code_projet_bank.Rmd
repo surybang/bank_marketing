@@ -1,0 +1,514 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+Projet Bank Marketing 
+
+## Input variables:
+
+### Bank client data:
+1. **age** (numeric)
+2. **job** : type of job (categorical: "admin.","blue-collar","entrepreneur","housemaid","management","retired","self-employed","services","student","technician","unemployed","unknown")
+3. **marital** : marital status (categorical: "divorced","married","single","unknown"; note: "divorced" means divorced or widowed)
+4. **education** (categorical: "basic.4y","basic.6y","basic.9y","high.school","illiterate","professional.course","university.degree","unknown")
+5. **default**: has data in default? (categorical: "no","yes","unknown")
+6. **housing**: has housing loan? (categorical: "no","yes","unknown")
+7. **loan**: has personal loan? (categorical: "no","yes","unknown")
+
+### Related with the last contact of the current campaign:
+8. **contact**: contact communication type (categorical: "cellular","telephone")
+9. **month**: last contact month of year (categorical: "jan", "feb", "mar", ..., "nov", "dec")
+10. **day_of_week**: last contact day of the week (categorical: "mon","tue","wed","thu","fri")
+11. **duration**: last contact duration, in seconds (numeric). 
+
+### Other attributes:
+12. **campaign**: number of contacts performed during this campaign and for this client (numeric, includes last contact)
+13. **pdays**: number of days that passed by after the client was last contacted from a previous campaign (numeric; 999 means client was not previously contacted)
+14. **previous**: number of contacts performed before this campaign and for this client (numeric)
+15. **poutcome**: outcome of the previous marketing campaign (categorical: "failure","nonexistent","success")
+
+### Social and economic context attributes:
+16. **emp.var.rate**: employment variation rate - quarterly indicator (numeric)
+17. **cons.price.idx**: consumer price index - monthly indicator (numeric)
+18. **cons.conf.idx**: consumer confidence index - monthly indicator (numeric)
+19. **euribor3m**: euribor 3 month rate - daily indicator (numeric)
+20. **nr.employed**: number of employees - quarterly indicator (numeric)
+
+## Output variable :
+21. **y** - has the client subscribed a term deposit? (binary: "yes","no")
+
+```{r}
+# Chargement des packages nécessaires
+library(MASS)
+library(broom)
+library(tidyverse)
+#library(ISLR)
+library(ROCR)
+library(caret)
+#library(pscl)
+library(e1071)
+#library(verification)
+library(rpart)
+#library(rpart.plot)
+library(randomForest)
+library(ipred)
+library(GGally)
+```
+
+
+
+```{r}
+data <- read.csv('C:/Users/hosfa/Downloads/bank+marketing/bank-additional/bank-additional-full.csv',sep=';', stringsAsFactors =  T)
+```
+
+On retire les variables dataleakage / pas utilisable en l'état (pas possible de voir une "vraie" relation avec le jour de la semaine ou le mois sans l'année, les observations pourraient être liées au hasard ou un event particulier)
+```{r}
+data <- data %>% dplyr::select(-c('duration'))
+data <- data %>% dplyr::rename(day.of.week = day_of_week)
+```
+
+```{r}
+# traitements des données
+data <- data %>% filter(data$loan != "unknown")
+data <- data %>% mutate(default = recode(default, "unknown" = "no"))
+data <- data %>% mutate(y = recode(y, 'yes' = 1, 'no' = 0))
+```
+
+# Exploration des données 
+```{r}
+head(data)
+```
+
+```{r}
+sapply(data,class)
+summary(data)
+```
+
+```{r}
+colSums(is.na(data))
+
+```
+
+
+# Distribution de la variable cible Variable cible
+```{r}
+table(data$y)
+round(prop.table(table(data$y))*100,2)
+```
+
+```{r}
+ggplot(data, aes(x = y)) +
+  geom_bar() +
+  labs(title = "Distribution de la variable cible")
+```
+
+# Analyses desc bivariée 
+
+## Variables numériques 
+
+```{r}
+by(data[,c("campaign","pdays","previous","emp.var.rate" ,"cons.price.idx", "cons.conf.idx", "euribor3m", "nr.employed", "age")],list(Cible=data$y),summary)
+```
+
+
+```{r}
+library(lattice)
+histogram(~campaign |y, data=data, type="percent", col="grey", breaks = 10)
+histogram(~pdays |y, data=data, type="percent", col="grey", breaks = 10)
+histogram(~previous |y, data=data, type="percent", col="grey", breaks = 10)
+histogram(~emp.var.rate |y, data=data, type="percent", col="grey", breaks = 10)
+histogram(~cons.price.idx |y, data=data, type="percent", col="grey", breaks = 10)
+histogram(~cons.conf.idx |y, data=data, type="percent", col="grey", breaks = 10)
+histogram(~euribor3m |y, data=data, type="percent", col="grey", breaks = 10)
+histogram(~nr.employed |y, data=data, type="percent", col="grey", breaks = 10)
+histogram(~age |y, data=data, type="percent", col="grey", breaks = 10)
+
+          
+```
+
+```{r}
+#ggbivariate(data, outcome = "y", explanatory = c("age", "campaign", "pdays", "emp.var.rate", "cons.price.idx"))
+#ggbivariate(data, outcome = "y", explanatory = c("previous", "cons.conf.idx", "euribor3m", "nr.employed"))
+ggpairs(data[, c("age", "campaign", "pdays", "emp.var.rate", "cons.price.idx")],aes(color=factor(data$y)))
+ggpairs(data[, c("previous", "cons.conf.idx", "euribor3m", "nr.employed")],aes(color=factor(data$y)))
+```
+
+
+```{r}
+numeric_vars <- c("campaign", "pdays", "previous", "emp.var.rate", "cons.price.idx", "cons.conf.idx", "euribor3m", "nr.employed", "age")
+
+data$y <- as.numeric(data$y)
+correlation_matrix <- cor(data[, c("y", numeric_vars)])
+
+
+colnames(correlation_matrix) <- rownames(correlation_matrix) <- c("y", "campaign", "pdays", "previous", "emp.var.rate", "cons.price.idx", "cons.conf.idx", "euribor3m", "nr.employed", "age")
+
+# Convertir en data frame pour une manipulation plus facile
+cor_matrix_df <- as.data.frame(correlation_matrix)
+
+# Identifier les paires de variables avec une corrélation élevée 
+high_cor_pairs <- which(abs(correlation_matrix) > 0.7, arr.ind = TRUE)
+high_cor_pairs <- high_cor_pairs[high_cor_pairs[, 1] != high_cor_pairs[, 2], ]
+
+# Filtrer les paires uniques 
+high_cor_pairs <- unique(t(apply(high_cor_pairs, 1, sort)))
+
+# Afficher les variables avec une corrélation élevée
+high_cor_vars <- data.frame(
+  Variable1 = rownames(correlation_matrix)[high_cor_pairs[, 1]],
+  Variable2 = colnames(correlation_matrix)[high_cor_pairs[, 2]],
+  Correlation = correlation_matrix[high_cor_pairs]
+)
+
+print(high_cor_vars)
+
+
+library(corrplot)
+corrplot(correlation_matrix, 
+         type = "upper", 
+         order = "hclust", 
+         tl.col = "black", 
+         tl.srt = 45)
+```
+
+## Variables catégorielles
+
+```{r}
+data$y <- as.factor(data$y)
+ggbivariate(data, outcome = "y", explanatory = c("loan", "contact","job", "marital","education", "default","housing", "month","day.of.week"))
+
+```
+
+
+
+# Echantillonnage 
+```{r}
+set.seed(123)
+data$y <- as.factor(data$y)
+id <- sample(1:nrow(data), round(nrow(data)*0.7))
+train <- data[id, ]
+test  <- data[-id, ]
+prop.table(table(train$y))*100
+prop.table(table(test$y))*100
+
+```
+
+# Régression logistique avec toutes les variables 
+```{r}
+glm.global <- glm(y ~ ., family = binomial(link="logit"), train)
+
+summary(glm.global)
+
+
+train.prob.glob<-predict(glm.global, newdata=train, type="response")
+pred<-prediction(train.prob.glob, train$y)
+performance(pred,"auc")@y.values[[1]]  #0.798 en train sur glm.global
+
+test.prob.glob<-predict(glm.global, newdata=test, type="response")
+pred<-prediction(test.prob.glob, test$y)
+auc_test_glm_global <- performance(pred,"auc")@y.values[[1]]  # 0.781666 en test
+auc_test_glm_global
+```
+
+# Stocker l'AUC du modèle
+```{r}
+model_performance <- data.frame(
+  Model = c("glm.global_test"),
+  AUC = c(auc_test_glm_global)
+)
+```
+
+
+
+# Régression Logistique select. Variable avec AIC 
+```{r}
+backward <- stepAIC(glm.global, trace = F) # Backward selection est l'option par défaut
+formula(backward) # 13/19 des variables retenues 
+
+train.back <-predict(backward, newdata=train, type="response")
+pred<-prediction(train.back, train$y)
+performance(pred,"auc")@y.values[[1]]  #0.797 en train
+
+test.back<-predict(backward, newdata=test, type="response")
+pred<-prediction(test.back, test$y)
+auc_test_backward <- performance(pred,"auc")@y.values[[1]] #0.782 en test
+auc_test_backward
+model_performance <- rbind(model_performance, 
+                           data.frame(Model = "backward_test", AUC = auc_test_backward))
+
+```
+
+
+# Régression logistique en validation croisée 
+```{r}
+train$y <- as.factor(train$y)
+test$y <- as.factor(test$y)
+levels(train$y) <- make.names(levels(train$y))
+levels(test$y) <- make.names(levels(test$y))
+
+target <- "y"
+predictors <- setdiff(names(data), target)
+
+
+# Définir la méthode de validation croisée en 10 folds
+train_control <- trainControl(method = "cv", number = 10, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Ajuster le modèle de régression logistique
+model <- train(
+  as.formula(paste(target, "~", paste(predictors, collapse = "+"))),
+  data = train,
+  method = "glm",
+  family = "binomial",
+  trControl = train_control,
+  metric = "ROC"
+)
+
+# Prédictions sur l'ensemble d'entraînement
+train_probs <- predict(model, newdata = train, type = "prob")[,2]
+train_pred <- prediction(train_probs, train$y)
+train_auc <- performance(train_pred, "auc")@y.values[[1]]
+
+# Prédictions sur l'ensemble de test
+test_probs <- predict(model, newdata = test, type = "prob")[,2]
+test_pred <- prediction(test_probs, test$y)
+glm_cv_auc <- performance(test_pred, "auc")@y.values[[1]]
+
+train_auc
+glm_cv_auc
+model_performance <- rbind(model_performance, 
+                           data.frame(Model = "glm_cv_test", AUC = glm_cv_auc))
+```
+
+
+# Regression logistique en retirant les observations influentes 
+```{r}
+#model
+#+pred 
+```
+
+
+
+
+# RandomForest
+```{r}
+#===============================================
+# 2- Forêts aléatoires
+#===============================================
+set.seed(235)
+x_test<-test[setdiff(names(test),"y")]
+
+rf<-randomForest(y~., data=train,
+                 importance=TRUE, mtry=3, keep.forest=TRUE, ytest=test[,"y"], xtest=x_test)
+min.err<-min(rf$err.rate[,"OOB"])
+min.err #10%
+min.err.idx<-which(rf$err.rate[,"OOB"]==min.err)
+min.err.idx #355 
+plot(rf$err.rate[, 1], type = "l", xlab = "nombre d'arbres", ylab = "erreur OOB")
+varImpPlot(rf)
+##Implementation plus rapide de RF avec le package "ranger"
+
+
+# auc train
+rf_train<-predict(rf, train, type="prob")[,2]
+pred<-prediction(rf_train, train$y)
+performance(pred,"auc")@y.values[[1]] ##auc=0.79
+
+# auc test 
+rf_test<-predict(rf,test, type="prob")[,2]
+pred<-prediction(rf_test, test$y)
+rf_base_auc = performance(pred,"auc")@y.values[[1]] ##auc=0.79
+
+model_performance <- rbind(model_performance, 
+                           data.frame(Model = "rf_base", AUC = rf_base_auc))
+```
+
+
+
+
+# Random forest avec gridsearch
+```{r}
+
+# Créez une grille de recherche des paramètres
+hyper_grid <- expand.grid(
+  mtry = 1:4,
+  nodesize = 1:3,
+  ntree = seq(50, 1000, 100)
+)
+
+# Initialiser une colonne pour stocker l'erreur OOB
+hyper_grid$OOB_ERR <- NA
+
+# Effectuer la recherche par grille
+for (i in 1:nrow(hyper_grid)) {
+  
+  # Entraînez le modèle ranger
+  model <- ranger(
+    formula = y ~ .,
+    data = train,
+    mtry = hyper_grid$mtry[i],
+    min.node.size = hyper_grid$nodesize[i],
+    num.trees = hyper_grid$ntree[i],
+    importance = "impurity",
+    probability = TRUE
+  )
+  
+  # Ajouter l'erreur OOB à la grille
+  hyper_grid$OOB_ERR[i] <- model$prediction.error
+}
+
+# Sélectionnez la combinaison de paramètres qui minimise l'erreur OOB
+best_params <- hyper_grid[which.min(hyper_grid$OOB_ERR), ]
+
+# Affichez les meilleurs paramètres
+print(best_params)
+
+# Entraînez le modèle final avec les meilleurs paramètres
+final_model <- ranger(
+  formula = y ~ .,
+  data = train,
+  mtry = best_params$mtry,
+  min.node.size = best_params$nodesize,
+  num.trees = best_params$ntree,
+  importance = "impurity",
+  probability = TRUE
+)
+
+#mtry 2 
+#nodesize 3
+#ntree 950 
+#OOBERR 0.07
+
+
+predictions_train <- predict(final_model, data = train)$predictions[,2] 
+roc_curve <- roc(train$y, predictions_train)
+auc_value <- auc(roc_curve) # 0.92
+
+predictions <- predict(final_model, data = test)$predictions[,2]
+roc_curve <- roc(test$y, predictions)
+rf_auc_opti <- auc(roc_curve) #0.787 - overfit ?
+model_performance <- rbind(model_performance, 
+                           data.frame(Model = "rf_optimisée", AUC = rf_auc_opti))
+
+```
+
+
+
+# RANDOM FOREST CV 
+```{r}
+library(caret)
+# Définir les paramètres de la validation croisée
+train_control <- trainControl(
+  method = "cv",
+  number = 5,
+  savePredictions = "final",
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+# Créez une grille de recherche des paramètres pour Random Forest
+tune_grid <- expand.grid(
+  mtry = 1:4,
+  min.node.size = 1:3,
+  splitrule = "gini"
+)
+
+
+# Modèle Random Forest pour différents nombres d'arbres
+
+set.seed(123)
+rf_model <- train(
+    y ~ .,
+    data = train,
+    method = "ranger",
+    trControl = train_control,
+    tuneGrid = tune_grid,
+    num.trees = 1500,
+    importance = "impurity")
+
+
+```
+
+```{r}
+# Récupérer les résultats de la validation croisée
+cv_results <- rf_model$results
+best_result <- cv_results[which.max(cv_results$ROC), ]
+print(best_result)
+
+```
+# Fit du modèle avec CV + grid
+```{r}
+library(ranger)
+
+rf_param_cv <- ranger(
+    formula = y ~ .,
+    data = train,
+    mtry = 2,
+    min.node.size = 3,
+    num.trees = 1500,
+    importance = "impurity",
+    probability = TRUE
+  )
+
+predictions <- predict(rf_param_cv, data = test)$predictions[,2]
+roc_curve <- pROC::roc(test$y, predictions)
+rf_auc_opti_cv <- pROC::auc(roc_curve) #0.787 - overfit ?
+model_performance <- rbind(model_performance, 
+                           data.frame(Model = "rf_optimisée_cv", AUC = rf_auc_opti_cv))
+
+```
+
+
+
+
+#Boosting 
+```{r}
+#===============================================
+# 4- Boosting
+#===============================================
+library(ada)
+set.seed(235)
+
+#####on teste un boosting de "stumps"
+boost1<-ada(y~., 
+           data=train, 
+           type="discrete",
+           loss="exponential",
+           control=rpart.control(maxdepth=1,cp=-1),
+           iter=300,
+           nu=1,
+           test.y=test[,"y"],
+           test.x=x_test)
+plot(boost1, kappa=F, test=T, tflag=F)
+#sur-apprentissage disparu mais err. finale en test n'a presque pas augmentée (0.26/0.23)
+summary(boost1)
+plot(boost1, kappa=F, test=T, tflag=F)
+#on utilise l'algo Real AdaBoost au lieu de discrete Ada pour avoir probabilités
+
+plot(boost, kappa=F, test=T, tflag=F)
+#prediction
+test$boost1 <- predict(boost1, test, type='prob')[,2]
+pred <-prediction(test$boost1, test$y)
+performance(pred,"auc")@y.values[[1]]
+
+
+```
+
+# Boosting avec gridsearch 
+```{r}
+
+```
+
+
+# Graph AUC avec tt les modèles 
+```{r}
+
+```
+
+
+# Matrices de confusions 
+```{r}
+
+```
+
